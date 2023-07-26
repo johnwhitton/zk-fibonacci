@@ -1,10 +1,10 @@
 use std::marker::PhantomData;
+
 use halo2_proofs::{
     arithmetic::FieldExt,
-    // circuit::*,
-    pasta::*,
-    plonk::*,
-    poly::Rotation, circuit::{SimpleFloorPlanner, AssignedCell, Layouter},
+    circuit::*,
+    plonk::*, poly::Rotation,
+    pasta::Fp, dev::MockProver,
 };
 
 #[derive(Debug, Clone)]
@@ -12,13 +12,10 @@ struct ACell<F: FieldExt>(AssignedCell<F, F>);
 
 #[derive(Debug, Clone)]
 struct FiboConfig {
-    pub col_a: Column<Advice>,
-    pub col_b: Column<Advice>,
-    pub col_c: Column<Advice>,
+    pub advice: [Column<Advice>; 3],
     pub selector: Selector,
 }
 
-#[derive(Debug, Clone)]
 struct FiboChip<F: FieldExt> {
     config: FiboConfig,
     _marker: PhantomData<F>,
@@ -26,59 +23,57 @@ struct FiboChip<F: FieldExt> {
 
 impl<F: FieldExt> FiboChip<F> {
     fn construct(config: FiboConfig) -> Self {
-        Self { config, _marker: PhantomData }
+        Self { config, _marker: PhantomData}
 
     }
-
-    fn configure(
-        meta: &mut ConstraintSystem<F>,
+    fn configure(meta: &mut ConstraintSystem<F>,
         advice: [Column<Advice>; 3],
     ) -> FiboConfig {
-        let col_a = meta.advice_column();
-        let col_b = meta.advice_column();
-        let col_c = meta.advice_column();
+        let col_a = advice[0];
+        let col_b = advice[1];
+        let col_c = advice[2];
         let selector = meta.selector();
-
-
         meta.enable_equality(col_a);
         meta.enable_equality(col_b);
         meta.enable_equality(col_c);
+        
 
-        meta.create_gate("add",  |meta|{
+        meta.create_gate("add", |meta| {
             let s: Expression<F> = meta.query_selector(selector);
-            let a: Expression<F> = meta.query_advice(col_a, Rotation::cur());
-            let b: Expression<F> = meta.query_advice(col_b, Rotation::cur());
-            let c: Expression<F> = meta.query_advice(col_c, Rotation::cur());
-            vec![s * (a+b-c)];
+            let a = meta.query_advice(col_a, Rotation::cur());
+            let b = meta.query_advice(col_b, Rotation::cur());
+            let c = meta.query_advice(col_c, Rotation::cur());
+            vec![s* (a + b - c)]
         });
 
         FiboConfig {
-            col_a, 
-            col_b, 
-            col_c,
+            advice: [col_a, col_b, col_c],
             selector,
         }
     }
 
-    fn assign_first_row(&self, mut layouter: impl Layouter<F>, a: Option<F>, b: Option<F>)
-    -> Result<(ACell<F>, ACell<F>, ACell<F>), Error>{
+    fn assign_first_row(
+        &self, 
+        mut layouter: impl Layouter<F>, 
+        a: Option<F>, 
+        b: Option<F>)
+        -> Result<(ACell<F>, ACell<F>, ACell<F>), Error>{
         layouter.assign_region(
-            || "first row",
+            || "first_row",
             |mut region| {
                 self.config.selector.enable(&mut region, 0)?;
 
                 let a_cell = region.assign_advice(
                     || "a",
-                    self.config.col_a,
-                    0, 
+                    self.config.advice[0],
+                    0,
                     || a.ok_or(Error::Synthesis),
                 ).map(ACell)?;
 
-
                 let b_cell = region.assign_advice(
                     || "b",
-                    self.config.col_b,
-                    0, 
+                    self.config.advice[1],
+                    0,
                     || b.ok_or(Error::Synthesis),
                 ).map(ACell)?;
 
@@ -86,42 +81,52 @@ impl<F: FieldExt> FiboChip<F> {
 
                 let c_cell = region.assign_advice(
                     || "c",
-                    self.config.col_c,
+                    self.config.advice[2],
                     0,
                     || c_val.ok_or(Error::Synthesis),
-                )?;
+                ).map(ACell)?;
 
                 Ok((a_cell, b_cell, c_cell))
             })
-
     }
 
-    fn assign_row(&self, mut layouter: impl Layouter<F>, prev_b: &ACell<F>, prev_c: &ACell<F>)
+    fn assign_row(
+        &self, 
+        mut layouter: impl Layouter<F>, 
+        prev_b: &ACell<F>, 
+        prev_c: &ACell<F>)
         -> Result<ACell<F>, Error> {
             layouter.assign_region(
                 || "next row",
-                |mut region: Region<{unknown}>| {
-                    self.config.selector.enable(&mut region, 0);
-                    prev_b.0.copy_advice(|| "a", &mut region, self.config.col_a, 0)?;
-                    prev_c.0.copy_advice(|| "b", &mut region, self.config.col_b, 0)?;
+                |mut region| {
+                    self.config.selector.enable(&mut region, 0)?;
+
+                    prev_b.0.copy_advice(|| "a", &mut region, self.config.advice[0], 0)?;
+                    prev_c.0.copy_advice(|| "b", &mut region, self.config.advice[1], 0)?;
 
                     let c_val = prev_b.0.value().and_then(
                         |b| {
+                            // Uncomment one of the lines below 
+                            // this line runs sucessfully
                             prev_c.0.value().map(|c| *b + *c)
+                            // this line produces an error
+                            // prev_c.0.value().map(|c| *b + *c + *b)
                         }
                     );
+
                     let c_cell = region.assign_advice(
-                        ||"c",
-                        self.config.col_c,
+                        || "c",
+                        self.config.advice[2],
                         0,
-                        || c_val.ok.or(Error::Synthesis),
+                        || c_val.ok_or(Error::Synthesis),
                     ).map(ACell)?;
 
                     Ok(c_cell)
-                },
+
+                }
             )
         }
-    }
+}
 
 #[derive(Default)]
 struct MyCircuit<F> {
@@ -142,26 +147,28 @@ impl<F: FieldExt> Circuit<F> for MyCircuit<F> {
         let col_b = meta.advice_column();
         let col_c = meta.advice_column();
         FiboChip::configure(meta, [col_a, col_b, col_c])
+        
     }
 
     fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<F>) -> Result<(), Error> {
-       let chip = FiboChip::construct(config); 
+        let chip = FiboChip::construct(config);
 
-       let (_, mut prev_b, mut prev_c) = chip.assign_first_row(
-        layouter.namespace(|| "first_row"),
-        self.a, self.b,
-       );
-
-       for _i in 3..10{
-        let (a,b,c) = chip.assign_row(
-            layouter.namespace(||"next row"),
-            &prev_b,
-            &prev_c,
+        let (_, mut prev_b, mut prev_c) = chip.assign_first_row(
+            layouter.namespace(|| "first row"), 
+            self.a, self.b,
         )?;
-        prev_b = prev_c;
-        prev_c = c_cell;
-       }
-       Ok(())
+
+        for _i in 3..10 {
+            let c_cell = chip.assign_row(
+                layouter.namespace(|| "next row"),
+                &prev_b,
+                &prev_c,
+            )?;
+            prev_b = prev_c;
+            prev_c = c_cell;
+        }
+
+        Ok(())
     }
 }
 
@@ -175,7 +182,7 @@ fn main() {
         b: Some(b),
     };
 
-    let prover: MockProver::run(k, &circuit, vec![]).unwrap();
+    let prover: MockProver<Fp> = MockProver::run(k, &circuit, vec![]).unwrap();
     prover.assert_satisfied();
 
     println!("Hello, world!");

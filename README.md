@@ -2,6 +2,15 @@
 
 Zero Knowledge Halo2 Fibonacci example
 
+## Running the examples
+
+To run example1
+
+```bash
+cargo build
+cargo run --bin example1
+```
+
 ## References
 
 - [Fibonacci Sequence Explainer](https://www.mathsisfun.com/numbers/fibonacci-sequence.html)
